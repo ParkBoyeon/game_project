@@ -39,6 +39,17 @@ MUSH_STEM = (240, 200, 150)  # mushroom pale stem
 MUSH_DOT  = (255, 255, 255)  # white dots on cap
 FLOWER_O  = (255, 130,   0)  # fire flower outer petals
 FLOWER_Y  = (255, 220,   0)  # fire flower inner / center
+# ── Pipe / Flagpole ───────────────────────────────────────────────────────────
+PIPE_W     = TILE * 2               # 64 px wide
+PIPE_H     = TILE * 3               # 96 px tall
+PIPE_COLS  = [22, 44, 94, 145, 193] # world columns; pipe[0]→pipe[1] warp
+PIPE_GREEN = (0,  160,   0)
+PIPE_LIGHT = (80, 220,  80)
+PIPE_DARK  = (0,   90,   0)
+FLAG_COL   = WORLD_COLS - 6         # = 234
+FLAG_TOP   = 5  * TILE              # y = 160
+FLAG_BOT   = 12 * TILE              # y = 384 (ground level)
+FLAG_X     = FLAG_COL * TILE        # world x of pole
 
 # ── Fonts (init after pygame.init) ───────────────────────────────────────────
 _fhud = _fq = None
@@ -270,6 +281,34 @@ def draw_flower(surf, x, y):
     pygame.draw.circle(surf, FLOWER_Y, (bx+11, by+8), 5)
     pygame.draw.circle(surf, WHITE,    (bx+11, by+8), 2)
 
+# ── Pipe drawing ──────────────────────────────────────────────────────────────
+def draw_pipe(surf, sx, sy):
+    sw, sh = PIPE_W, PIPE_H
+    # Body (below cap)
+    pygame.draw.rect(surf, PIPE_DARK,  (sx + 4,  sy + 16, sw - 8,  sh - 16))
+    pygame.draw.rect(surf, PIPE_GREEN, (sx + 6,  sy + 18, sw - 12, sh - 18))
+    pygame.draw.rect(surf, PIPE_LIGHT, (sx + 8,  sy + 20, 10,       sh - 22))
+    # Cap
+    pygame.draw.rect(surf, PIPE_DARK,  (sx,      sy,      sw,      16))
+    pygame.draw.rect(surf, PIPE_GREEN, (sx + 2,  sy + 2,  sw - 4,  12))
+    pygame.draw.rect(surf, PIPE_LIGHT, (sx + 4,  sy + 4,  14,       6))
+
+# ── Flagpole drawing ──────────────────────────────────────────────────────────
+def draw_flagpole(surf, cam_x):
+    px = FLAG_X - int(cam_x)
+    if not (-20 < px < WIN_W + 60):
+        return
+    # Pole
+    pygame.draw.rect(surf, (150, 150, 150), (px + 1, FLAG_TOP,     4, FLAG_BOT - FLAG_TOP))
+    pygame.draw.rect(surf, WHITE,           (px + 2, FLAG_TOP + 2, 2, FLAG_BOT - FLAG_TOP - 4))
+    # Gold ball at top
+    pygame.draw.circle(surf, COIN_C,       (px + 3, FLAG_TOP), 6)
+    pygame.draw.circle(surf, (200, 160, 0),(px + 3, FLAG_TOP), 4)
+    # Green triangular flag (right side of pole)
+    fx, fy = px + 6, FLAG_TOP + 2
+    pygame.draw.polygon(surf, (0, 180, 60), [(fx, fy), (fx+30, fy+14), (fx, fy+28)])
+    pygame.draw.polygon(surf, (0, 110, 35), [(fx, fy), (fx+30, fy+14), (fx, fy+28)], 1)
+
 # ── Game ──────────────────────────────────────────────────────────────────────
 class MarioGame:
     MARIO_W, MARIO_H = 28, 36
@@ -306,6 +345,15 @@ class MarioGame:
         self.items       = []   # spawned coins / mushrooms / flowers
         self.mario_big   = False
         self.mario_fire  = False
+        # Pipes
+        _gy = 12 * TILE
+        self.pipes = [pygame.Rect(col * TILE, _gy - PIPE_H, PIPE_W, PIPE_H)
+                      for col in PIPE_COLS]
+        # Transition state
+        self.fade_alpha   = 0
+        self.pipe_enter_t = 0
+        self.pipe_exit_t  = 0
+        self.flag_t       = 0
         # Goombas
         goomba_cols = [14,24,38,53,63,76,92,103,118,133,146,163,177,205,215,226]
         self.goombas = []
@@ -345,6 +393,11 @@ class MarioGame:
                     elif vx < 0:
                         rect.left  = (c+1) * TILE; vx = 0
         rect.x = max(0, rect.x)
+        # Pipe collision (horizontal)
+        for pipe in self.pipes:
+            if rect.colliderect(pipe):
+                if vx > 0: rect.right = pipe.left; vx = 0
+                elif vx < 0: rect.left  = pipe.right; vx = 0
 
         # ── Vertical ──
         rect.y += round(vy)
@@ -360,12 +413,56 @@ class MarioGame:
                         rect.top = (r+1) * TILE
                         hit_ceiling_tiles.append((c, r))
                         vy = 0
+        # Pipe collision (vertical)
+        for pipe in self.pipes:
+            if rect.colliderect(pipe):
+                if vy > 0: rect.bottom = pipe.top; on_ground = True; vy = 0
+                elif vy < 0: rect.top = pipe.bottom; vy = 0
 
         return vx, vy, on_ground, hit_ceiling_tiles
 
     # ── Update ────────────────────────────────────────────────────────────────
     def update(self, dt, keys):
-        if self.state == 'title' or self.state == 'gameover':
+        if self.state in ('title', 'gameover', 'win'):
+            return
+
+        # ── Pipe enter (마리오가 파이프 속으로 내려감) ──────────────────────────
+        if self.state == 'pipe_enter':
+            self.pipe_enter_t += dt
+            self.my += 1.5
+            self.fade_alpha = min(255, int(self.pipe_enter_t / 500 * 255))
+            if self.pipe_enter_t >= 700:
+                ep = self.pipes[1]
+                self.mx        = float(ep.left + (PIPE_W - self.MARIO_W) // 2)
+                self.my        = float(ep.top + 8)  # 파이프 안에서 시작
+                target_cam     = self.mx - WIN_W // 3
+                self.cam_x     = max(0.0, min(float(target_cam),
+                                              float(WORLD_COLS * TILE - WIN_W)))
+                self.state        = 'pipe_exit'
+                self.pipe_exit_t  = 0
+                self.fade_alpha   = 255
+            return
+
+        # ── Pipe exit (마리오가 파이프에서 나타남) ──────────────────────────────
+        if self.state == 'pipe_exit':
+            self.pipe_exit_t += dt
+            self.my -= 1.5
+            self.fade_alpha = max(0, 255 - int(self.pipe_exit_t / 400 * 255))
+            if self.pipe_exit_t >= 600:
+                self.state      = 'playing'
+                self.fade_alpha = 0
+                self.mvy        = 0
+            return
+
+        # ── Flagpole slide (폴을 타고 내려감) ───────────────────────────────────
+        if self.state == 'flagpole':
+            self.flag_t += dt
+            if int(self.my) + self.MARIO_H < FLAG_BOT:
+                self.my    += 2.5
+                self.mx     = float(FLAG_X - self.MARIO_W + 4)
+                self.facing = 1
+            if self.flag_t >= 1800:
+                self.state = 'win'
             return
 
         if self.dead:
@@ -469,6 +566,10 @@ class MarioGame:
                         elif g['vx'] < 0: gr.left = (col+1)*TILE; g['vx'] *= -1
             if gr.left <= 0: gr.left = 0; g['vx'] = abs(g['vx'])
             if gr.right >= WORLD_COLS*TILE: gr.right = WORLD_COLS*TILE; g['vx'] = -abs(g['vx'])
+            for pipe in self.pipes:
+                if gr.colliderect(pipe):
+                    if g['vx'] > 0: gr.right = pipe.left; g['vx'] = -abs(g['vx'])
+                    elif g['vx'] < 0: gr.left = pipe.right; g['vx'] = abs(g['vx'])
             g['x'] = float(gr.x)
 
             g['y'] += g['vy']
@@ -481,6 +582,10 @@ class MarioGame:
                             gr.bottom = row*TILE; g['vy'] = 0
                         elif g['vy'] < 0:
                             gr.top = (row+1)*TILE; g['vy'] = 0
+            for pipe in self.pipes:
+                if gr.colliderect(pipe):
+                    if g['vy'] >= 0: gr.bottom = pipe.top; g['vy'] = 0
+                    else: gr.top = pipe.bottom; g['vy'] = 0
             g['y'] = float(gr.y)
 
             # Fall out of world
@@ -553,6 +658,10 @@ class MarioGame:
                                     ir.left  = (col+1) * TILE;  item['vx'] =  abs(item['vx'])
                     if ir.left  <= 0:                ir.left  = 0;                item['vx'] =  abs(item['vx'])
                     if ir.right >= WORLD_COLS * TILE: ir.right = WORLD_COLS*TILE; item['vx'] = -abs(item['vx'])
+                    for pipe in self.pipes:
+                        if ir.colliderect(pipe):
+                            if item['vx'] > 0: ir.right = pipe.left; item['vx'] = -abs(item['vx'])
+                            elif item['vx'] < 0: ir.left = pipe.right; item['vx'] = abs(item['vx'])
                     item['x'] = float(ir.x)
                     # Gravity + vertical collision
                     item['vy'] += GRAVITY
@@ -566,6 +675,10 @@ class MarioGame:
                                     ir.bottom = row * TILE;     item['vy'] = 0
                                 else:
                                     ir.top    = (row+1) * TILE; item['vy'] = 0
+                    for pipe in self.pipes:
+                        if ir.colliderect(pipe):
+                            if item['vy'] >= 0: ir.bottom = pipe.top; item['vy'] = 0
+                            else: ir.top = pipe.bottom; item['vy'] = 0
                     item['y'] = float(ir.y)
                     if item['y'] > WIN_H + 64:
                         item['alive'] = False
@@ -583,9 +696,24 @@ class MarioGame:
                         self.mario_fire  = True
                         self.mario_big   = True
 
-        # Win condition
-        if self.mx > (WORLD_COLS - 6) * TILE:
-            self.state = 'win'
+        # ── Pipe entry check (↓ 키로 첫 번째 파이프 입장) ───────────────────────
+        if keys[pygame.K_DOWN] and self.on_ground:
+            pipe0      = self.pipes[0]
+            mario_cx   = int(self.mx) + self.MARIO_W // 2
+            mario_feet = int(self.my) + self.MARIO_H
+            if pipe0.left < mario_cx < pipe0.right and abs(mario_feet - pipe0.top) <= 6:
+                self.state        = 'pipe_enter'
+                self.pipe_enter_t = 0
+                self.fade_alpha   = 0
+                self.mvx = 0; self.mvy = 0
+
+        # ── Flagpole collision ────────────────────────────────────────────────
+        pole_rect = pygame.Rect(FLAG_X, FLAG_TOP, 8, FLAG_BOT - FLAG_TOP)
+        if mario_rect.colliderect(pole_rect):
+            self.state  = 'flagpole'
+            self.flag_t = 0
+            self.score += 500
+            self.mvx = 0; self.mvy = 0
 
     def _die(self):
         self.dead      = True
@@ -610,6 +738,15 @@ class MarioGame:
                 if t != EMPTY:
                     py = r * TILE + bump_offsets.get((c, r), 0)
                     draw_tile(self.screen, t, c*TILE - int(self.cam_x), py)
+
+        # Pipes
+        for pipe in self.pipes:
+            px = pipe.x - int(self.cam_x)
+            if -PIPE_W < px < WIN_W + PIPE_W:
+                draw_pipe(self.screen, px, pipe.y)
+
+        # Flagpole
+        draw_flagpole(self.screen, self.cam_x)
 
         # Items (spawned coins / mushrooms / flowers)
         for item in self.items:
@@ -639,9 +776,16 @@ class MarioGame:
         self._draw_hud()
 
         # Overlays
-        if self.state == 'title':  self._draw_title()
+        if self.state == 'title':      self._draw_title()
         elif self.state == 'gameover': self._draw_gameover()
-        elif self.state == 'win':  self._draw_win()
+        elif self.state == 'win':      self._draw_win()
+
+        # Pipe transition fade
+        if self.fade_alpha > 0:
+            fs = pygame.Surface((WIN_W, WIN_H))
+            fs.fill(BLACK)
+            fs.set_alpha(self.fade_alpha)
+            self.screen.blit(fs, (0, 0))
 
         pygame.display.flip()
 
@@ -717,7 +861,7 @@ class MarioGame:
             for event in pygame.event.get():
                 if not self.handle_event(event):
                     running = False
-            if self.state == 'playing':
+            if self.state in ('playing', 'pipe_enter', 'pipe_exit', 'flagpole'):
                 keys = pygame.key.get_pressed()
                 self.update(dt, keys)
             self.draw()
