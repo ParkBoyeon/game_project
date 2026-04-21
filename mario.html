@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Super Mario</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  overflow: hidden;
+}
+canvas {
+  display: block;
+  image-rendering: pixelated;
+}
+#controls {
+  display: none;
+  gap: 12px;
+  margin-top: 8px;
+  align-items: center;
+}
+.btn {
+  width: 58px; height: 58px;
+  background: rgba(255,255,255,0.25);
+  border: 2px solid rgba(255,255,255,0.5);
+  border-radius: 10px;
+  color: #fff;
+  font-size: 22px;
+  cursor: pointer;
+  user-select: none;
+  display: flex; align-items: center; justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: none;
+}
+.btn:active { background: rgba(255,255,255,0.45); }
+#btn-jump { width:70px; height:70px; border-radius:50%; background:rgba(229,42,42,0.35); border-color:rgba(229,42,42,0.7); }
+#btn-fire { width:54px; height:54px; border-radius:50%; background:rgba(255,180,0,0.35); border-color:rgba(255,180,0,0.7); font-size:16px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="controls">
+  <button class="btn" id="btn-left">&#9664;</button>
+  <button class="btn" id="btn-right">&#9654;</button>
+  <button class="btn" id="btn-jump">&#9650;</button>
+  <button class="btn" id="btn-fire">FIRE</button>
+</div>
+
+<script>
+// ─── Constants ────────────────────────────────────────────────────
+const TILE = 32;
+const GRAVITY = 0.55;
+const MAP_W = 210; // tiles
+const MAP_H = 15;
+
+const T = { EMPTY:0, GND:1, BRICK:2, QMARK:3, QUSED:4,
+            PTL:5, PTR:6, PBL:7, PBR:8, SOLID:9 };
+const SOLID_TILES = new Set([T.GND, T.BRICK, T.QMARK, T.QUSED, T.PTL, T.PTR, T.PBL, T.PBR, T.SOLID]);
+
+const PS = { SMALL:0, BIG:1, FIRE:2 };
+
+// ─── Canvas / Scale ───────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let SCALE = 2;
+const GW = 400; // game-space width
+let GH = 300;
+
+function resize() {
+  const mh = window.innerHeight - (isMobile() ? 120 : 10);
+  const mw = window.innerWidth;
+  let w = mw, h = w * 0.75;
+  if (h > mh) { h = mh; w = h / 0.75; }
+  canvas.width  = Math.floor(w);
+  canvas.height = Math.floor(h);
+  SCALE = canvas.width / GW;
+  GH = canvas.height / SCALE;
+  document.getElementById('controls').style.display = isMobile() ? 'flex' : 'none';
+}
+function isMobile() { return window.innerWidth < 700 || /Android|iPhone|iPad/i.test(navigator.userAgent); }
+
+// ─── Input ────────────────────────────────────────────────────────
+const keys = {}, prev = {};
+document.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if ([' ','ArrowUp','ArrowDown'].includes(e.key)) e.preventDefault();
+  if (e.key === 'Enter') onEnter();
+});
+document.addEventListener('keyup', e => { keys[e.key] = false; });
+
+function bindBtn(id, k) {
+  const el = document.getElementById(id);
+  const on  = e => { e.preventDefault(); keys[k] = true; };
+  const off = e => { e.preventDefault(); keys[k] = false; };
+  el.addEventListener('touchstart', on, {passive:false});
+  el.addEventListener('touchend',   off, {passive:false});
+  el.addEventListener('mousedown', on);
+  el.addEventListener('mouseup',   off);
+}
+bindBtn('btn-left',  'ArrowLeft');
+bindBtn('btn-right', 'ArrowRight');
+bindBtn('btn-jump',  ' ');
+bindBtn('btn-fire',  'x');
+
+function pressed(k)  { return keys[k] && !prev[k]; }
+function held(k)     { return !!keys[k]; }
+
+// ─── State machine ────────────────────────────────────────────────
+// 'play' | 'dead' | 'pipe_in' | 'pipe_out' | 'flag' | 'walk_flag' | 'clear' | 'over'
+let gstate = 'play', gTimer = 0;
+let fadeAlpha = 0;
+let clearTimeBonus = 0;
+
+// ─── Player ───────────────────────────────────────────────────────
+const P = {
+  x:100, y:0, w:24, h:24, vx:0, vy:0,
+  onGround:false, dir:1,
+  pstate: PS.SMALL,
+  inv:0,
+  lives:3, score:0, coins:0,
+  time:400,
+  dead:false,
+};
+
+// ─── Map & entities ───────────────────────────────────────────────
+let map = [], entities = [], camX = 0, frameN = 0;
+let pipeEnterCol = -1;     // the pipe col that allows entry
+let flagPole = null;
+const qUsed = new Set();   // 'col,row' strings for used Q-blocks
+const blockBumps = new Map(); // 'col,row' → 남은 범프 프레임(0~8)
+
+function getTile(c, r) {
+  if (c<0||c>=MAP_W||r<0||r>=MAP_H) return T.GND;
+  return map[r][c];
+}
+function setTile(c, r, t) { if (c>=0&&c<MAP_W&&r>=0&&r<MAP_H) map[r][c]=t; }
+
+function buildMap() {
+  map = Array.from({length:MAP_H}, ()=> new Array(MAP_W).fill(T.EMPTY));
+
+  // Ground rows 13-14
+  for (let c=0; c<MAP_W; c++) { setTile(c,13,T.GND); setTile(c,14,T.GND); }
+  // Gaps
+  [[50,53],[82,86],[140,143]].forEach(([a,b])=>{
+    for(let c=a;c<b;c++) { setTile(c,13,T.EMPTY); setTile(c,14,T.EMPTY); }
+  });
+
+  // Floating platforms row 10
+  for(let c=16;c<=18;c++) setTile(c,10,T.BRICK);
+  setTile(19,10,T.QMARK); setTile(20,10,T.QMARK);
+  for(let c=21;c<=23;c++) setTile(c,10,T.BRICK);
+  setTile(28,10,T.QMARK);
+  // Row 8
+  setTile(36,8,T.BRICK); setTile(37,8,T.QMARK); setTile(38,8,T.BRICK); setTile(39,8,T.QMARK);
+  // Row 6 high platform
+  for(let c=42;c<=50;c++) setTile(c,6,T.BRICK);
+  // More Q-blocks
+  setTile(62,10,T.QMARK); setTile(72,10,T.QMARK); setTile(73,10,T.BRICK); setTile(74,10,T.QMARK);
+  setTile(91,10,T.QMARK); setTile(92,10,T.BRICK);
+  setTile(102,8,T.QMARK); setTile(103,8,T.QMARK);
+  for(let c=112;c<=120;c++) setTile(c,10,T.BRICK);
+  setTile(116,10,T.QMARK);
+  for(let c=131;c<=139;c++) setTile(c,10,T.BRICK);
+  setTile(135,10,T.QMARK);
+  for(let c=155;c<=160;c++) setTile(c,10,T.BRICK);
+
+  // Steps before flag (col 170)
+  const ss = 170;
+  for(let s=0;s<5;s++) for(let r=14-s;r<=14;r++) setTile(ss+s,r,T.SOLID);
+  for(let s=0;s<5;s++) for(let r=10+s;r<=14;r++) setTile(ss+5+s,r,T.SOLID);
+
+  // Pipes (4개 – 1번째에 진입 이벤트)
+  placePipe(10, 12, true);   // <-- enter event
+  placePipe(55, 12, false);
+  placePipe(112, 12, false);
+  placePipe(155, 11, false);
+
+  // Flag pole col 185, rows 7-13
+  const fc = 185;
+  for(let r=7;r<=13;r++) setTile(fc, r, T.SOLID);
+  flagPole = { col:fc, x:fc*TILE+TILE/2, topY:7*TILE, baseY:13*TILE+TILE };
+}
+
+function placePipe(col, topRow, canEnter) {
+  setTile(col,   topRow, T.PTL); setTile(col+1, topRow, T.PTR);
+  for(let r=topRow+1;r<=13;r++) { setTile(col,r,T.PBL); setTile(col+1,r,T.PBR); }
+  if(canEnter) pipeEnterCol = col;
+}
+
+// ─── Entities ─────────────────────────────────────────────────────
+function spawnGoomba(tx, tr) {
+  entities.push({ type:'goomba', x:tx*TILE+2, y:tr*TILE, w:28, h:24,
+    vx:-1, vy:0, onGround:false, squished:false, squishT:0 });
+}
+function spawnCoin(tx, ty) {
+  entities.push({ type:'coin', x:tx*TILE+8, y:ty*TILE+8, w:16, h:16, collected:false });
+}
+function spawnEffect(x, y, txt, col='#FFD700') {
+  entities.push({ type:'fx', x, y, text:txt, color:col, life:60, vy:-1.5 });
+}
+
+function buildEntities() {
+  entities = [];
+  const goombas = [20,31,63,65,76,96,98,106,126,141,158,162,167,168];
+  goombas.forEach(c => spawnGoomba(c, 12));
+  // 맵에 고정 코인 없음 - 코인은 Q블록에서만 획득
+}
+
+// ─── Init / Reset ─────────────────────────────────────────────────
+function resetLevel() {
+  fadeAlpha=0; clearTimeBonus=0;
+  P.x=100; P.y=11*TILE; P.vx=0; P.vy=0;
+  P.onGround=false; P.dir=1;
+  P.pstate=PS.SMALL; P.inv=0; P.dead=false;
+  P.time=400;
+  camX=0; gstate='play'; gTimer=0;
+  qUsed.clear();
+  blockBumps.clear();
+  if(flagPole) flagPole.cleared=false;
+  buildMap(); buildEntities();
+  applySize();
+}
+function fullReset() {
+  P.lives=3; P.score=0; P.coins=0;
+  resetLevel();
+}
+function applySize() {
+  if(P.pstate===PS.SMALL){ P.w=24; P.h=24; }
+  else { P.w=24; P.h=40; }
+}
+
+// ─── Collision helpers ────────────────────────────────────────────
+function overlap(a, b) {
+  return a.x < b.x+b.w && a.x+a.w > b.x && a.y < b.y+b.h && a.y+a.h > b.y;
+}
+function moveX(obj, dx) {
+  obj.x += dx;
+  const c0=Math.floor(obj.x/TILE), c1=Math.floor((obj.x+obj.w-1)/TILE);
+  const r0=Math.floor(obj.y/TILE), r1=Math.floor((obj.y+obj.h-1)/TILE);
+  for(let r=r0;r<=r1;r++) {
+    if(dx>0 && SOLID_TILES.has(getTile(c1,r))) { obj.x=c1*TILE-obj.w; if('vx' in obj) obj.vx=0; return; }
+    if(dx<0 && SOLID_TILES.has(getTile(c0,r))) { obj.x=(c0+1)*TILE;   if('vx' in obj) obj.vx=0; return; }
+  }
+}
+function moveY(obj, dy, isPlayer) {
+  obj.y += dy;
+  const c0=Math.floor(obj.x/TILE), c1=Math.floor((obj.x+obj.w-1)/TILE);
+  const r0=Math.floor(obj.y/TILE), r1=Math.floor((obj.y+obj.h-1)/TILE);
+  obj.onGround = false;
+  for(let c=c0;c<=c1;c++) {
+    if(dy>0 && SOLID_TILES.has(getTile(c,r1))) {
+      obj.y=r1*TILE-obj.h; if('vy' in obj) obj.vy=0; obj.onGround=true; return;
+    }
+    if(dy<0 && SOLID_TILES.has(getTile(c,r0))) {
+      obj.y=(r0+1)*TILE; if('vy' in obj) obj.vy=0;
+      if(isPlayer) hitBlock(c, r0);
+      return;
+    }
+  }
+}
+
+function hitBlock(col, row) {
+  const t = getTile(col, row);
+  const key = col+','+row;
+
+  if(t === T.BRICK) {
+    if(P.pstate > PS.SMALL) {
+      setTile(col, row, T.EMPTY);
+      P.score += 50;
+      spawnEffect(col*TILE+16, row*TILE, '+50');
+    }
+    return;
+  }
+
+  if(t !== T.QMARK || qUsed.has(key)) return;
+
+  // 블록 사용 처리
+  qUsed.add(key);
+  setTile(col, row, T.QUSED);
+  blockBumps.set(key, 8);
+
+  const blockTopY = row * TILE;          // 블록 상단 y
+  const aboveY    = blockTopY - TILE;    // 블록 한 칸 위 y (아이템 목표 위치)
+  const itemX     = col * TILE + 4;      // 아이템 x (블록 내 중앙 근처)
+
+  // 70% 코인 / 30% 아이템 (파이어 마리오는 항상 코인)
+  const spawnItem = Math.random() >= 0.7 && P.pstate !== PS.FIRE;
+
+  if(!spawnItem) {
+    // 코인: 블록 상단보다 8px 위에서 시작해 위로 튀어오름
+    entities.push({ type:'coin_pop',
+      x: col*TILE + (TILE-16)/2,
+      y: blockTopY - 8,
+      w:16, h:16, vy:-9, life:55 });
+    P.score += 100; P.coins++;
+    spawnEffect(col*TILE+16, blockTopY-20, '+100');
+  } else if(P.pstate === PS.SMALL) {
+    // 버섯: 블록 상단 바로 위에서 시작 → 한 칸 위까지 서서히 솟아오름
+    entities.push({ type:'mushroom',
+      x: itemX, y: blockTopY - 2,      // ← 블록 상단 바로 위 (2px 노출)
+      w:24, h:24, vx:1.5, vy:0,
+      onGround:false,
+      emerging:true, emergeTarget:aboveY });
+  } else {
+    // 파이어 플라워 (큰 마리오)
+    entities.push({ type:'flower',
+      x: itemX, y: blockTopY - 2,
+      w:24, h:24,
+      emerging:true, emergeTarget:aboveY });
+  }
+}
+
+// ─── Player actions ───────────────────────────────────────────────
+function playerHurt() {
+  if(P.inv>0) return;
+  if(P.pstate===PS.FIRE)  { P.pstate=PS.BIG;   P.inv=120; applySize(); }
+  else if(P.pstate===PS.BIG) { P.pstate=PS.SMALL; P.inv=120; applySize(); }
+  else playerDie();
+}
+function playerDie() {
+  if(P.dead) return;
+  P.dead=true; P.vy=-13; P.vx=0; gstate='dead'; gTimer=180;
+}
+
+// ─── Update ───────────────────────────────────────────────────────
+function update() {
+  frameN++;
+
+  if(gstate==='over') return;
+
+  if(gstate==='dead') {
+    gTimer--;
+    P.vy += GRAVITY; P.y += P.vy;
+    if(gTimer<=0) {
+      P.lives--;
+      if(P.lives<=0) gstate='over';
+      else resetLevel();
+    }
+    return;
+  }
+  if(gstate==='clear') {
+    if(--gTimer<=0) { P.score=0; P.coins=0; resetLevel(); }
+    return;
+  }
+
+  if(gstate==='pipe_in') {
+    gTimer--;
+    P.y += 1.5;
+    fadeAlpha = Math.min(1, fadeAlpha + 0.07);
+    if(gTimer<=0) {
+      gstate='pipe_out'; gTimer=75;
+      P.x=(pipeEnterCol+0.5)*TILE - P.w/2;
+      P.y=12*TILE; P.vy=0; fadeAlpha=1;
+    }
+    return;
+  }
+  if(gstate==='pipe_out') {
+    gTimer--;
+    if(gTimer < 45) fadeAlpha = Math.max(0, fadeAlpha - 0.06);
+    if(gTimer < 55) P.y -= 1.5;
+    if(gTimer<=0) { gstate='play'; fadeAlpha=0; }
+    return;
+  }
+  if(gstate==='flag') {
+    gTimer--;
+    P.y = Math.min(P.y+2.5, flagPole.baseY - P.h);
+    if(P.y >= flagPole.baseY - P.h) {
+      gstate='walk_flag'; gTimer=90; P.dir=1;
+    }
+    return;
+  }
+  if(gstate==='walk_flag') {
+    gTimer--;
+    P.x += 1.5;
+    if(gTimer<=0) {
+      clearTimeBonus = P.time * 10;
+      P.score += clearTimeBonus;
+      P.time = 0;
+      gstate='clear'; gTimer=180;
+    }
+    return;
+  }
+
+  // ── Time countdown ──
+  if(frameN % 40 === 0 && P.time > 0) P.time--;
+  if(P.time <= 0) { playerDie(); return; }
+
+  // ── Movement ──
+  const spd = 3.8, acc = 0.7, fric = 0.84;
+  const goLeft  = held('ArrowLeft')  || held('a') || held('A');
+  const goRight = held('ArrowRight') || held('d') || held('D');
+
+  if(goLeft)  { P.vx -= acc; P.dir = -1; }
+  if(goRight) { P.vx += acc; P.dir =  1; }
+  if(!goLeft && !goRight) P.vx *= fric;
+  P.vx = Math.max(-spd, Math.min(spd, P.vx));
+
+  const jump = pressed(' ') || pressed('ArrowUp') || pressed('w') || pressed('W');
+  if(jump && P.onGround) { P.vy = -13; P.onGround=false; }
+
+  // Fire (X키 또는 Ctrl)
+  if(P.pstate===PS.FIRE && (pressed('x')||pressed('X')||pressed('Control'))) {
+    const fx = P.dir>0 ? P.x+P.w : P.x-12;
+    entities.push({ type:'fireball', x:fx, y:P.y+P.h/2-6, w:12, h:12, vx:P.dir*9, vy:-2, onGround:false, bounces:0 });
+  }
+
+  // Pipe enter
+  const down = pressed('ArrowDown') || pressed('s') || pressed('S');
+  if(down && P.onGround) {
+    const pc = Math.floor((P.x+P.w/2)/TILE);
+    if(pc===pipeEnterCol || pc===pipeEnterCol+1) { gstate='pipe_in'; gTimer=50; }
+  }
+
+  // Physics
+  P.vy += GRAVITY;
+  if(P.vy > 16) P.vy = 16;
+  moveX(P, P.vx);
+  moveY(P, P.vy, true);
+  if(P.x < 0) { P.x=0; P.vx=0; }
+
+  // Pit death
+  if(P.y > MAP_H*TILE+60) { playerDie(); return; }
+
+  // Camera
+  const tx = P.x - GW/2;
+  camX = Math.max(0, Math.min(tx, MAP_W*TILE - GW));
+
+  if(P.inv>0) P.inv--;
+
+  // Flag
+  if(flagPole && !flagPole.cleared) {
+    const px = P.x+P.w/2;
+    if(Math.abs(px - flagPole.x) < 14 && P.y+P.h < flagPole.baseY) {
+      flagPole.cleared=true; gstate='flag'; gTimer=90;
+      P.x=flagPole.x-P.w/2+6; P.vx=0;
+      P.score += 1000;
+      spawnEffect(flagPole.x-16, flagPole.topY-16, '+1000', '#FFD700');
+    }
+  }
+
+  // 블록 범프 타이머 감소
+  for(const [k,v] of blockBumps) {
+    if(v <= 1) blockBumps.delete(k);
+    else blockBumps.set(k, v-1);
+  }
+
+  updateEntities();
+
+  // Save prev
+  for(const k in keys) prev[k]=keys[k];
+  // Clear keys that are not held
+  for(const k in prev) if(!keys[k]) prev[k]=false;
+}
+
+function updateEntities() {
+  for(let i=entities.length-1; i>=0; i--) {
+    const e = entities[i];
+    if(e.type==='goomba') {
+      if(e.squished) { if(--e.squishT<=0) entities.splice(i,1); continue; }
+      e.vy += GRAVITY;
+      const ogvx = e.vx || -1;
+      moveX(e, e.vx);
+      if(e.vx===0) e.vx = -ogvx; // 벽 충돌 시 방향 반전
+      moveY(e, e.vy, false);
+      // 낭떠러지 앞에서 방향 반전
+      const gc=Math.floor((e.x+e.w/2)/TILE), gr=Math.floor((e.y+e.h+2)/TILE);
+      if(e.onGround && !SOLID_TILES.has(getTile(gc,gr))) e.vx *= -1;
+      // Player collision
+      if(P.inv<=0 && overlap(P,e)) {
+        if(P.vy>0 && P.y+P.h < e.y+e.h-6) {
+          e.squished=true; e.squishT=30; P.vy=-9;
+          P.score+=100; spawnEffect(e.x+4, e.y, '+100');
+        } else { playerHurt(); }
+      }
+    }
+    else if(e.type==='coin') {
+      if(!e.collected && overlap(P,e)) {
+        e.collected=true; P.score+=100; P.coins++;
+        spawnEffect(e.x, e.y, '+100');
+      }
+    }
+    else if(e.type==='mushroom') {
+      if(e.emerging) {
+        // 솟아오르는 연출: 블록 위로 천천히 올라옴 (충돌·중력 무시)
+        e.y -= 1.2;
+        if(e.y <= e.emergeTarget) { e.y = e.emergeTarget; e.emerging = false; }
+        // emerging 중에도 플레이어가 터치하면 획득
+        if(overlap(P,e)) {
+          entities.splice(i,1);
+          if(P.pstate===PS.SMALL) { P.pstate=PS.BIG; P.y-=16; applySize(); }
+          P.score+=1000; spawnEffect(e.x, e.y, '+1000', '#FF6B6B');
+        }
+        continue;
+      }
+      // emerging 끝난 후: 중력·이동 적용
+      e.vy += GRAVITY;
+      const omvx = e.vx || 1.5;
+      moveX(e, e.vx);
+      if(e.vx===0) e.vx = -omvx; // 벽 충돌 시 방향 반전
+      moveY(e, e.vy, false);
+      if(overlap(P,e)) {
+        entities.splice(i,1);
+        if(P.pstate===PS.SMALL) { P.pstate=PS.BIG; P.y-=16; applySize(); }
+        P.score+=1000; spawnEffect(e.x, e.y, '+1000', '#FF6B6B');
+      }
+    }
+    else if(e.type==='flower') {
+      if(e.emerging) {
+        e.y -= 1.2;
+        if(e.y <= e.emergeTarget) { e.y = e.emergeTarget; e.emerging = false; }
+        if(overlap(P,e)) {
+          entities.splice(i,1);
+          if(P.pstate < PS.FIRE) { P.pstate=PS.FIRE; applySize(); }
+          P.score+=1000; spawnEffect(e.x, e.y, '+1000', '#FF69B4');
+        }
+        continue;
+      }
+      // 파이어 플라워는 제자리에 고정, 충돌만 처리
+      if(overlap(P,e)) {
+        entities.splice(i,1);
+        if(P.pstate < PS.FIRE) { P.pstate=PS.FIRE; applySize(); }
+        P.score+=1000; spawnEffect(e.x, e.y, '+1000', '#FF69B4');
+      }
+    }
+    else if(e.type==='coin_pop') {
+      e.vy += 0.6;       // 중력: 위로 올라갔다 내려옴
+      e.y  += e.vy;
+      if(--e.life <= 0) entities.splice(i, 1);
+    }
+    else if(e.type==='fireball') {
+      e.vy += GRAVITY*0.4;
+      e.x += e.vx;
+      const fc=Math.floor(e.x/TILE), fr=Math.floor(e.y/TILE);
+      if(SOLID_TILES.has(getTile(fc,fr)) || e.x<0 || e.x>MAP_W*TILE) {
+        entities.splice(i,1); continue;
+      }
+      e.y += e.vy;
+      const fr2=Math.floor((e.y+e.h)/TILE);
+      if(SOLID_TILES.has(getTile(fc,fr2))) {
+        e.y=fr2*TILE-e.h; e.vy=-7; if(++e.bounces>5){entities.splice(i,1);continue;}
+      }
+      let hit=false;
+      for(const en of entities) {
+        if(en.type==='goomba'&&!en.squished&&overlap(e,en)) {
+          en.squished=true; en.squishT=30;
+          P.score+=200; spawnEffect(en.x+4,en.y,'+200');
+          entities.splice(i,1); hit=true; break;
+        }
+      }
+    }
+    else if(e.type==='fx') {
+      e.y+=e.vy; if(--e.life<=0) entities.splice(i,1);
+    }
+  }
+}
+
+// ─── Draw ─────────────────────────────────────────────────────────
+function draw() {
+  ctx.save();
+  ctx.scale(SCALE, SCALE);
+
+  // Sky
+  ctx.fillStyle='#5C94FC';
+  ctx.fillRect(0, 0, GW, GH);
+
+  drawBg();
+  drawMap();
+  drawEntities();
+  drawFlagPole();
+  if(!P.dead || gstate!=='dead' || frameN%8<4) drawPlayer();
+  drawHUD();
+  drawOverlay();
+  // 페이드 오버레이 (파이프 진입/퇴장)
+  if(fadeAlpha > 0) {
+    ctx.fillStyle = 'rgba(0,0,0,'+fadeAlpha+')';
+    ctx.fillRect(0, 0, GW, GH);
+  }
+
+  ctx.restore();
+}
+
+function ws(x) { return x - camX; } // world → screen X
+
+function drawBg() {
+  // Clouds (parallax)
+  ctx.fillStyle='#fff';
+  const cloudXs = [150,400,700,1100,1600,2200,2900,3700,4600,5400];
+  for(const cx of cloudXs) {
+    const sx = (cx - camX*0.5) % (MAP_W*TILE);
+    if(sx < -100 || sx > GW+100) continue;
+    cloud(sx,    45);
+    cloud(sx+320, 65);
+  }
+  // Hills
+  ctx.fillStyle='#00A800';
+  const hillXs = [250,700,1400,2300,3400,4800];
+  for(const hx of hillXs) {
+    const sx = ws(hx);
+    if(sx < -120 || sx > GW+120) continue;
+    ctx.beginPath(); ctx.arc(sx,13*TILE,70,Math.PI,0); ctx.fill();
+    ctx.fillStyle='#00C800';
+    ctx.beginPath(); ctx.arc(sx+12,13*TILE-20,30,Math.PI,0); ctx.fill();
+    ctx.fillStyle='#00A800';
+  }
+}
+function cloud(x,y) {
+  ctx.beginPath();
+  ctx.arc(x,    y, 14, 0, Math.PI*2);
+  ctx.arc(x+16, y-8,18, 0, Math.PI*2);
+  ctx.arc(x+32, y, 14, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillRect(x-14, y, 60, 16);
+}
+
+const TCOLOR = {
+  [T.GND]:   ['#C84B0E','#E8720C'],
+  [T.BRICK]: ['#A33A0A','#C84B0E'],
+  [T.QMARK]: ['#B87A00','#FFD700'],
+  [T.QUSED]: ['#666','#888'],
+  [T.SOLID]: ['#8B4513','#CD853F'],
+  [T.PTL]:['#006400','#00A800'],[T.PTR]:['#006400','#00A800'],
+  [T.PBL]:['#004000','#006400'],[T.PBR]:['#004000','#006400'],
+};
+
+function drawMap() {
+  const c0 = Math.max(0, Math.floor(camX/TILE));
+  const c1 = Math.min(MAP_W-1, Math.ceil((camX+GW)/TILE));
+  for(let r=0;r<MAP_H;r++) {
+    for(let c=c0;c<=c1;c++) {
+      const t=map[r][c];
+      if(t===T.EMPTY) continue;
+      const sx=c*TILE-camX;
+      // QUSED 범프: sin 곡선으로 블록이 위로 통통 튀는 효과
+      const bt = blockBumps.get(c+','+r) || 0;
+      const sy = r*TILE - (bt > 0 ? Math.round(Math.sin((9-bt)/8*Math.PI)*6) : 0);
+      drawTile(t, sx, sy);
+    }
+  }
+}
+
+function drawTile(t, sx, sy) {
+  const [d, l] = TCOLOR[t] || ['#555','#777'];
+  if(t===T.GND) {
+    ctx.fillStyle=l; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle=d; ctx.fillRect(sx,sy,TILE,5);
+    ctx.strokeStyle=d; ctx.lineWidth=0.5;
+    ctx.strokeRect(sx,sy,TILE,TILE);
+    ctx.beginPath();
+    ctx.moveTo(sx+TILE/2,sy); ctx.lineTo(sx+TILE/2,sy+TILE);
+    ctx.stroke();
+  } else if(t===T.BRICK) {
+    ctx.fillStyle=d; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle=l;
+    ctx.fillRect(sx+1,sy+1, TILE-2, TILE/2-1);
+    ctx.fillRect(sx+1,sy+TILE/2+1, TILE/2-1, TILE/2-2);
+    ctx.fillRect(sx+TILE/2+1,sy+TILE/2+1, TILE/2-2, TILE/2-2);
+  } else if(t===T.QMARK) {
+    ctx.fillStyle=l; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle=d;
+    ctx.strokeStyle=d; ctx.lineWidth=1.5; ctx.strokeRect(sx,sy,TILE,TILE);
+    ctx.fillStyle='#000'; ctx.font='bold 17px monospace'; ctx.textAlign='center';
+    ctx.fillText(frameN%50<25?'?':'!', sx+TILE/2, sy+TILE-7);
+  } else if(t===T.QUSED) {
+    ctx.fillStyle=d; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.strokeStyle='#444'; ctx.lineWidth=1; ctx.strokeRect(sx,sy,TILE,TILE);
+  } else if(t===T.SOLID) {
+    ctx.fillStyle=d; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle=l; ctx.fillRect(sx+3,sy+3,TILE-6,TILE-6);
+    ctx.fillStyle=d; ctx.fillRect(sx+6,sy+6,TILE-12,TILE-12);
+  } else if(t===T.PTL) {
+    ctx.fillStyle=d; ctx.fillRect(sx,sy,TILE,TILE);
+    // Pipe top lip
+    ctx.fillStyle='#00C800'; ctx.fillRect(sx-4,sy,TILE+4,10);
+    ctx.fillStyle=l; ctx.fillRect(sx+3,sy+11,5,TILE-11);
+  } else if(t===T.PTR) {
+    ctx.fillStyle=d; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle='#00C800'; ctx.fillRect(sx,sy,TILE+4,10);
+    ctx.fillStyle=l; ctx.fillRect(sx+TILE-8,sy+11,5,TILE-11);
+  } else if(t===T.PBL) {
+    ctx.fillStyle=d; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle=l; ctx.fillRect(sx+3,sy,5,TILE);
+  } else if(t===T.PBR) {
+    ctx.fillStyle=d; ctx.fillRect(sx,sy,TILE,TILE);
+    ctx.fillStyle=l; ctx.fillRect(sx+TILE-8,sy,5,TILE);
+  }
+}
+
+function drawPlayer() {
+  const sx = ws(P.x), sy = P.y;
+  if(P.inv>0 && frameN%4<2) return;
+  ctx.save();
+  if(P.dir<0) { ctx.translate(sx+P.w/2,0); ctx.scale(-1,1); ctx.translate(-P.w/2,0); }
+  else ctx.translate(sx,0);
+
+  if(P.pstate===PS.SMALL) drawSmallMario(0,sy);
+  else if(P.pstate===PS.BIG) drawBigMario(0,sy);
+  else drawFireMario(0,sy);
+  ctx.restore();
+}
+
+function drawSmallMario(x,y) {
+  // Hat
+  ctx.fillStyle='#E52A2A'; ctx.fillRect(x+4,y,16,5); ctx.fillRect(x+2,y+3,20,3);
+  // Face
+  ctx.fillStyle='#FFAB6D'; ctx.fillRect(x+2,y+6,20,10);
+  // Eye
+  ctx.fillStyle='#000'; ctx.fillRect(x+8,y+8,3,3);
+  // Mustache
+  ctx.fillStyle='#7B3F00'; ctx.fillRect(x+3,y+13,18,3);
+  // Body (overalls)
+  ctx.fillStyle='#3333CC'; ctx.fillRect(x+4,y+16,16,6);
+  ctx.fillStyle='#E52A2A'; ctx.fillRect(x+2,y+16,4,6); ctx.fillRect(x+18,y+16,4,6);
+  // Shoes
+  ctx.fillStyle='#5C3010';
+  ctx.fillRect(x+1,y+20,9,4); ctx.fillRect(x+14,y+20,9,4);
+}
+
+function drawBigMario(x,y) {
+  // Hat
+  ctx.fillStyle='#E52A2A'; ctx.fillRect(x+4,y,16,7); ctx.fillRect(x+2,y+5,20,4);
+  // Face
+  ctx.fillStyle='#FFAB6D'; ctx.fillRect(x+2,y+9,20,13);
+  ctx.fillStyle='#000'; ctx.fillRect(x+7,y+12,4,4);
+  ctx.fillStyle='#7B3F00'; ctx.fillRect(x+3,y+18,18,4);
+  // Body
+  ctx.fillStyle='#E52A2A'; ctx.fillRect(x+2,y+22,20,12);
+  ctx.fillStyle='#3333CC'; ctx.fillRect(x+5,y+25,14,9);
+  // Buttons
+  ctx.fillStyle='#FFD700'; ctx.fillRect(x+8,y+26,3,3); ctx.fillRect(x+13,y+26,3,3);
+  // Shoes
+  ctx.fillStyle='#5C3010';
+  ctx.fillRect(x+1,y+33,10,7); ctx.fillRect(x+13,y+33,10,7);
+}
+
+function drawFireMario(x,y) {
+  ctx.fillStyle='#E52A2A'; ctx.fillRect(x+4,y,16,7); ctx.fillRect(x+2,y+5,20,4);
+  ctx.fillStyle='#FFAB6D'; ctx.fillRect(x+2,y+9,20,13);
+  ctx.fillStyle='#000'; ctx.fillRect(x+7,y+12,4,4);
+  ctx.fillStyle='#7B3F00'; ctx.fillRect(x+3,y+18,18,4);
+  // White body
+  ctx.fillStyle='#FFFFFF'; ctx.fillRect(x+2,y+22,20,12);
+  ctx.fillStyle='#E52A2A'; ctx.fillRect(x+5,y+25,14,9);
+  ctx.fillStyle='#FFD700'; ctx.fillRect(x+8,y+26,3,3); ctx.fillRect(x+13,y+26,3,3);
+  ctx.fillStyle='#5C3010';
+  ctx.fillRect(x+1,y+33,10,7); ctx.fillRect(x+13,y+33,10,7);
+}
+
+function drawEntities() {
+  for(const e of entities) {
+    const sx = ws(e.x);
+    if(sx < -64 || sx > GW+64) continue;
+    if(e.type==='goomba') {
+      if(e.squished) {
+        // 납작하게 눌린 굼바
+        ctx.fillStyle = '#8B3A0F';
+        ctx.beginPath(); ctx.ellipse(sx+14, e.y+e.h-4, 13, 4, 0, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#111';
+        ctx.beginPath(); ctx.ellipse(sx+8,  e.y+e.h-4, 4, 2, 0, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(sx+20, e.y+e.h-4, 4, 2, 0, 0, Math.PI*2); ctx.fill();
+      } else drawGoomba(sx, e.y);
+    }
+    else if(e.type==='coin' && !e.collected) {
+      const bob = Math.sin(frameN*0.1+e.x*0.02)*3;
+      drawCoin(sx, e.y+bob);
+    }
+    else if(e.type==='mushroom') drawMushroom(sx, e.y);
+    else if(e.type==='flower') drawFlower(sx, e.y);
+    else if(e.type==='coin_pop') drawCoin(sx, e.y);
+    else if(e.type==='fireball') {
+      const spin = (frameN*20) * Math.PI/180;
+      ctx.save();
+      ctx.translate(sx+6, e.y+6);
+      ctx.rotate(spin);
+      ctx.fillStyle='#FF6600'; ctx.beginPath(); ctx.arc(0,0,6,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#FFFF00'; ctx.beginPath(); ctx.arc(0,0,3,0,Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+    else if(e.type==='fx' && e.text) {
+      ctx.save();
+      ctx.globalAlpha = e.life/60;
+      ctx.fillStyle = e.color||'#FFD700';
+      ctx.font='bold 9px monospace'; ctx.textAlign='center';
+      ctx.fillText(e.text, sx+8, e.y);
+      ctx.restore();
+    }
+  }
+}
+
+function drawGoomba(x, y) {
+  const cx = x + 14, cy = y + 13; // 몸통 중심
+
+  // ── 몸통 (둥근 버섯형 갈색) ──────────────────────────────────
+  ctx.fillStyle = '#8B3A0F';
+  ctx.beginPath();
+  ctx.arc(cx, cy, 13, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ── 턱/복부 베이지 영역 ──────────────────────────────────────
+  ctx.fillStyle = '#C8916A';
+  ctx.beginPath();
+  ctx.ellipse(cx, cy + 8, 8, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ── 흰자 (큰 눈) ────────────────────────────────────────────
+  ctx.fillStyle = '#FFFFFF';
+  ctx.beginPath(); ctx.ellipse(x + 7,  cy - 1, 6, 7, -0.2, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(x + 21, cy - 1, 6, 7,  0.2, 0, Math.PI * 2); ctx.fill();
+
+  // ── 눈동자 ──────────────────────────────────────────────────
+  ctx.fillStyle = '#111';
+  ctx.beginPath(); ctx.arc(x + 8,  cy,     4, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 20, cy,     4, 0, Math.PI * 2); ctx.fill();
+  // 눈 하이라이트
+  ctx.fillStyle = '#FFF';
+  ctx.beginPath(); ctx.arc(x + 9,  cy - 2, 1.2, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 21, cy - 2, 1.2, 0, Math.PI * 2); ctx.fill();
+
+  // ── 눈썹 (V자형, 굵고 화남) ──────────────────────────────────
+  ctx.strokeStyle = '#111';
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(x + 2,  cy - 8); ctx.lineTo(x + 12, cy - 5);  // 왼쪽 눈썹
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x + 26, cy - 8); ctx.lineTo(x + 16, cy - 5);  // 오른쪽 눈썹
+  ctx.stroke();
+
+  // ── 송곳니 ──────────────────────────────────────────────────
+  ctx.fillStyle = '#FFFFFF';
+  ctx.beginPath();
+  ctx.moveTo(x + 9,  cy + 6); ctx.lineTo(x + 7,  cy + 11); ctx.lineTo(x + 12, cy + 7);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x + 19, cy + 6); ctx.lineTo(x + 17, cy + 11); ctx.lineTo(x + 22, cy + 7);
+  ctx.fill();
+
+  // ── 발 (걷기 애니메이션) ─────────────────────────────────────
+  ctx.fillStyle = '#4A1A00';
+  const walk = frameN % 20 < 10;
+  // 왼발
+  ctx.beginPath();
+  ctx.ellipse(x + (walk ? 5 : 8),  y + 24, 6, 4, walk ? -0.3 : 0.3, 0, Math.PI * 2);
+  ctx.fill();
+  // 오른발
+  ctx.beginPath();
+  ctx.ellipse(x + (walk ? 21 : 18), y + 24, 6, 4, walk ? 0.3 : -0.3, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawCoin(x,y) {
+  ctx.fillStyle='#FFD700'; ctx.beginPath(); ctx.arc(x+8,y+8,8,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#FFA500'; ctx.beginPath(); ctx.arc(x+8,y+8,5,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#FFD700'; ctx.font='bold 7px monospace'; ctx.textAlign='center';
+  ctx.fillText('$', x+8, y+11);
+}
+
+function drawMushroom(x,y) {
+  ctx.fillStyle='#E52A2A'; ctx.beginPath(); ctx.arc(x+12,y+8,12,Math.PI,0); ctx.fill();
+  ctx.fillStyle='#FFF'; ctx.fillRect(x+2,y+9,5,5); ctx.fillRect(x+15,y+6,5,5);
+  ctx.fillStyle='#FFAB6D'; ctx.fillRect(x+4,y+14,16,10);
+  ctx.fillStyle='#000'; ctx.fillRect(x+7,y+16,3,3); ctx.fillRect(x+14,y+16,3,3);
+}
+
+function drawFlower(x,y) {
+  ctx.fillStyle='#00A800'; ctx.fillRect(x+10,y+10,4,14);
+  ctx.fillStyle='#FF69B4';
+  [[-8,0],[8,0],[0,-8],[0,8]].forEach(([dx,dy])=>{
+    ctx.beginPath(); ctx.arc(x+12+dx,y+8+dy,7,0,Math.PI*2); ctx.fill();
+  });
+  ctx.fillStyle='#FFFF00'; ctx.beginPath(); ctx.arc(x+12,y+8,7,0,Math.PI*2); ctx.fill();
+}
+
+function drawFlagPole() {
+  if(!flagPole) return;
+  const sx = ws(flagPole.x);
+  if(sx < -20 || sx > GW+20) return;
+  // Pole
+  ctx.fillStyle='#888'; ctx.fillRect(sx-3, flagPole.topY, 6, flagPole.baseY-flagPole.topY);
+  // Ball
+  ctx.fillStyle='#FFD700'; ctx.beginPath(); ctx.arc(sx, flagPole.topY, 8, 0, Math.PI*2); ctx.fill();
+  // Flag
+  if(!flagPole.cleared) {
+    ctx.fillStyle='#00A800'; ctx.fillRect(sx, flagPole.topY+2, 24, 14);
+    ctx.fillStyle='#FFF'; ctx.fillRect(sx+6, flagPole.topY+5, 8, 8);
+  }
+}
+
+function drawHUD() {
+  ctx.fillStyle='rgba(0,0,0,0.75)';
+  ctx.fillRect(0, 0, GW, 26);
+  ctx.font='bold 9px monospace'; ctx.textAlign='left'; ctx.fillStyle='#FFF';
+  // Lives
+  drawSmallMarioIcon(6, 5);
+  ctx.fillText('x'+P.lives, 22, 17);
+  // Score
+  ctx.textAlign='center';
+  ctx.fillStyle='#FFD700'; ctx.fillText('SCORE', GW/2, 10);
+  ctx.fillStyle='#FFF'; ctx.fillText(String(P.score).padStart(6,'0'), GW/2, 20);
+  // Coins
+  ctx.textAlign='right';
+  ctx.fillStyle='#FFD700'; ctx.fillText('COIN x'+String(P.coins).padStart(2,'0'), GW*0.75, 17);
+  // Time
+  ctx.fillStyle = P.time<100 ? '#FF4444' : '#FFF';
+  ctx.fillText('TIME '+P.time, GW-6, 17);
+}
+
+function drawSmallMarioIcon(x,y) {
+  ctx.fillStyle='#E52A2A'; ctx.fillRect(x+2,y,10,4);
+  ctx.fillStyle='#FFAB6D'; ctx.fillRect(x+1,y+4,13,7);
+  ctx.fillStyle='#3333CC'; ctx.fillRect(x+2,y+11,10,5);
+}
+
+function drawOverlay() {
+  if(gstate==='clear') {
+    ctx.fillStyle='rgba(0,0,0,0.62)'; ctx.fillRect(0,0,GW,GH);
+    ctx.fillStyle='#FFD700'; ctx.font='bold 22px monospace'; ctx.textAlign='center';
+    ctx.fillText('COURSE CLEAR!', GW/2, GH/2-34);
+    ctx.fillStyle='#FFF'; ctx.font='bold 11px monospace';
+    if(clearTimeBonus > 0) {
+      ctx.fillStyle='#7FFFFF';
+      ctx.fillText('TIME BONUS  x'+clearTimeBonus, GW/2, GH/2-12);
+    }
+    ctx.fillStyle='#FFF';
+    ctx.fillText('SCORE: '+String(P.score).padStart(6,'0'), GW/2, GH/2+10);
+    const secs = Math.max(1, Math.ceil(gTimer/60));
+    ctx.fillStyle='#bbb'; ctx.font='9px monospace';
+    ctx.fillText('Restarting in '+secs+'s  (ENTER to skip)', GW/2, GH/2+30);
+  }
+  if(gstate==='over') {
+    ctx.fillStyle='rgba(0,0,0,0.7)'; ctx.fillRect(0,0,GW,GH);
+    ctx.fillStyle='#FF4444'; ctx.font='bold 24px monospace'; ctx.textAlign='center';
+    ctx.fillText('GAME OVER', GW/2, GH/2-20);
+    ctx.fillStyle='#FFF'; ctx.font='bold 12px monospace';
+    ctx.fillText('SCORE: '+P.score, GW/2, GH/2+8);
+    ctx.fillStyle='#aaa'; ctx.font='10px monospace';
+    ctx.fillText('Press ENTER to restart', GW/2, GH/2+28);
+  }
+}
+
+function onEnter() {
+  if(gstate==='over')  { fullReset(); }
+  else if(gstate==='clear') { P.score=0; P.coins=0; resetLevel(); }
+}
+
+// ─── Loop ─────────────────────────────────────────────────────────
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+window.addEventListener('resize', resize);
+resize();
+fullReset();
+loop();
+</script>
+</body>
+</html>

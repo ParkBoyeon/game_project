@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+
+# 가상환경
+.venv/
+venv/
+ENV/
+env/
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# 환경변수
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 로그
+*.log
+logs/
+
+# 임시파일
+*.tmp
+*.bak
+*.swp
+*.swo
