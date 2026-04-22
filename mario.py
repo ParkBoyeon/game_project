@@ -70,6 +70,12 @@ def make_level():
         for c in range(g, g+3):
             for r in range(12, WORLD_ROWS):
                 w[r][c] = EMPTY
+    # Pipe clear zones: 1-tile margin on each side of every pipe (pipe is 2 tiles wide)
+    pipe_clear = set()
+    for pc in PIPE_COLS:
+        for c in range(pc - 1, pc + PIPE_W // TILE + 1):
+            pipe_clear.add(c)
+
     # Platforms (col, row, width, type)
     defs = [
         (5,9,2,COIN_BLK),(8,9,1,BRICK),(10,7,3,BRICK),(13,9,1,COIN_BLK),
@@ -87,7 +93,8 @@ def make_level():
     ]
     for col,row,width,t in defs:
         for c in range(col, min(col+width, WORLD_COLS)):
-            w[row][c] = t
+            if c not in pipe_clear:
+                w[row][c] = t
     return w
 
 def is_solid(t):
