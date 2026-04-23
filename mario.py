@@ -76,20 +76,45 @@ def make_level():
         for c in range(pc - 1, pc + PIPE_W // TILE + 1):
             pipe_clear.add(c)
 
-    # Platforms (col, row, width, type)
+    # Platforms — 3-tier staircase layout:
+    #   tier 1 (row 9, COIN_BLK): jumpable from ground
+    #   tier 2 (row 7, COIN_BLK): reachable from tier 1, not from ground
+    #   tier 3 (row 5, BRICK   ): reachable from tier 1/2, brick-only platform
     defs = [
-        (5,9,2,COIN_BLK),(8,9,1,BRICK),(10,7,3,BRICK),(13,9,1,COIN_BLK),
-        (17,9,3,COIN_BLK),(21,7,4,BRICK),(26,9,2,COIN_BLK),
-        (35,9,4,BRICK),(39,7,2,COIN_BLK),(43,8,5,BRICK),(46,6,1,COIN_BLK),
-        (51,9,3,COIN_BLK),(55,7,3,BRICK),(59,9,4,BRICK),(62,7,2,COIN_BLK),
-        (72,9,3,BRICK),(75,7,3,COIN_BLK),(80,8,6,BRICK),(84,6,2,COIN_BLK),
-        (89,9,3,COIN_BLK),(94,7,4,BRICK),(99,9,3,BRICK),(102,7,2,COIN_BLK),
-        (112,8,5,BRICK),(116,6,3,COIN_BLK),(121,9,4,COIN_BLK),
-        (128,8,6,BRICK),(132,6,2,COIN_BLK),(139,9,3,COIN_BLK),
-        (144,7,4,BRICK),(158,9,4,BRICK),(162,7,2,COIN_BLK),
-        (168,8,5,COIN_BLK),(176,9,3,BRICK),(182,7,3,COIN_BLK),
-        (197,8,6,BRICK),(202,6,2,COIN_BLK),(208,9,4,COIN_BLK),
-        (218,7,5,BRICK),(223,9,3,COIN_BLK),
+        # ── Cluster 1  (before pipe@22) ───────────────────────────────────
+        (4,  9, 2, COIN_BLK), (8,  7, 2, COIN_BLK), (12, 5, 4, BRICK),
+        (17, 9, 1, COIN_BLK),
+
+        # ── Cluster 2  (gap@30 → pipe@44) ─────────────────────────────────
+        (33, 9, 2, COIN_BLK), (37, 7, 3, COIN_BLK),
+
+        # ── Cluster 3  (pipe@44 → gap@65) ─────────────────────────────────
+        (47, 9, 2, COIN_BLK), (51, 7, 2, COIN_BLK), (55, 5, 4, BRICK),
+        (61, 9, 1, COIN_BLK),
+
+        # ── Cluster 4  (gap@65 → pipe@94) ─────────────────────────────────
+        (68, 9, 2, COIN_BLK), (72, 7, 2, COIN_BLK), (76, 5, 4, BRICK),
+        (82, 9, 2, COIN_BLK), (86, 7, 3, BRICK),
+
+        # ── Cluster 5  (pipe@94 → gap@105) ────────────────────────────────
+        (97, 9, 2, COIN_BLK), (101, 7, 2, BRICK),
+
+        # ── Cluster 6  (gap@105 → pipe@145) ───────────────────────────────
+        (108, 9, 2, COIN_BLK), (112, 7, 2, COIN_BLK), (116, 5, 4, BRICK),
+        (123, 9, 3, COIN_BLK), (128, 7, 2, BRICK),    (132, 5, 4, BRICK),
+        (138, 9, 2, COIN_BLK), (141, 7, 2, BRICK),
+
+        # ── Cluster 7  (gap@148 → gap@187) ────────────────────────────────
+        (151, 9, 2, COIN_BLK), (155, 7, 2, COIN_BLK), (159, 5, 4, BRICK),
+        (165, 9, 2, COIN_BLK), (169, 7, 2, BRICK),    (173, 5, 4, BRICK),
+        (180, 9, 3, COIN_BLK), (184, 7, 2, BRICK),
+
+        # ── Cluster 8  (pipe@193 → gap@218) ───────────────────────────────
+        (196, 9, 2, COIN_BLK), (200, 7, 2, COIN_BLK), (204, 5, 4, BRICK),
+        (210, 9, 3, COIN_BLK), (214, 7, 2, BRICK),
+
+        # ── Cluster 9  (gap@218 → flagpole@234) ───────────────────────────
+        (221, 9, 2, COIN_BLK), (225, 7, 2, BRICK),    (229, 5, 3, BRICK),
     ]
     for col,row,width,t in defs:
         for c in range(col, min(col+width, WORLD_COLS)):
@@ -105,6 +130,42 @@ def tile_at(world, c, r):
         return world[r][c]
     if r >= WORLD_ROWS: return GROUND
     return EMPTY
+
+# ── Underground level ────────────────────────────────────────────────────────
+UG_COLS = 100   # underground map width in tiles
+
+def make_underground():
+    w = [[EMPTY]*UG_COLS for _ in range(WORLD_ROWS)]
+    # Ceiling (rows 0-1)
+    for c in range(UG_COLS):
+        w[0][c] = BRICK
+        w[1][c] = BRICK
+    # Floor (rows 13-14)
+    for c in range(UG_COLS):
+        for r in range(13, WORLD_ROWS):
+            w[r][c] = GROUND
+    # Left/right boundary walls
+    for r in range(WORLD_ROWS):
+        w[r][0] = BRICK; w[r][1] = BRICK
+        w[r][UG_COLS-1] = BRICK; w[r][UG_COLS-2] = BRICK
+    # Pipe clear columns (entry=5, decor=30,55, exit=82; 2-tile wide + 1 margin each side)
+    ug_pipe_clear = set()
+    for pc in (5, 30, 55, 82):
+        for c in range(pc-1, pc+3):
+            ug_pipe_clear.add(c)
+    # Platforms: row 9 (low) BRICK/COIN, row 7 (mid), row 5 (high, near ceiling)
+    ug_defs = [
+        (8,  9, 2, BRICK),    (21, 9, 3, COIN_BLK), (35, 9, 4, BRICK),
+        (50, 9, 3, COIN_BLK), (64, 9, 3, BRICK),    (78, 9, 3, COIN_BLK),
+        (14, 7, 3, BRICK),    (25, 7, 3, COIN_BLK),  (39, 7, 4, BRICK),
+        (58, 7, 3, COIN_BLK), (74, 7, 3, BRICK),
+        (10, 5, 3, COIN_BLK), (45, 5, 3, COIN_BLK),  (68, 5, 3, COIN_BLK),
+    ]
+    for col, row, width, t in ug_defs:
+        for c in range(col, min(col+width, UG_COLS)):
+            if c not in ug_pipe_clear:
+                w[row][c] = t
+    return w
 
 # ── Cloud helpers ─────────────────────────────────────────────────────────────
 def make_clouds():
@@ -125,8 +186,27 @@ def draw_clouds(surf, clouds, cam_x):
             pygame.draw.ellipse(surf, WHITE, (px + cw//4, cy - ch//2, cw//2, ch))
 
 # ── Tile drawing ──────────────────────────────────────────────────────────────
-def draw_tile(surf, tile, px, py):
+def draw_tile(surf, tile, px, py, underground=False):
     _fonts()
+    if underground:
+        if tile == GROUND:
+            pygame.draw.rect(surf, (75, 75, 85), (px, py, TILE, TILE))
+            pygame.draw.rect(surf, (50, 50, 60), (px, py, TILE, TILE), 2)
+        elif tile == BRICK:
+            pygame.draw.rect(surf, (105, 105, 118), (px, py, TILE, TILE))
+            pygame.draw.line(surf, (70, 70, 82), (px, py+TILE//2), (px+TILE, py+TILE//2), 1)
+            pygame.draw.line(surf, (70, 70, 82), (px+TILE//2, py), (px+TILE//2, py+TILE//2), 1)
+            pygame.draw.line(surf, (70, 70, 82), (px, py+TILE//2), (px, py+TILE), 1)
+            pygame.draw.rect(surf, (138, 138, 150), (px, py, TILE, TILE), 1)
+        elif tile == COIN_BLK:
+            pygame.draw.rect(surf, CBLK_C, (px, py, TILE, TILE))
+            pygame.draw.rect(surf, (170, 110, 0), (px, py, TILE, TILE), 2)
+            t = _fq.render('?', True, WHITE)
+            surf.blit(t, (px+TILE//2-t.get_width()//2, py+TILE//2-t.get_height()//2))
+        elif tile == USED_BLK:
+            pygame.draw.rect(surf, USED_C, (px, py, TILE, TILE))
+            pygame.draw.rect(surf, (120, 90, 60), (px, py, TILE, TILE), 2)
+        return
     if tile == GROUND:
         pygame.draw.rect(surf, GND_T, (px, py, TILE, 8))
         pygame.draw.rect(surf, GND_B, (px, py+8, TILE, TILE-8))
@@ -147,13 +227,46 @@ def draw_tile(surf, tile, px, py):
         pygame.draw.rect(surf,(120,90,60),(px,py,TILE,TILE),2)
 
 # ── Mario drawing ─────────────────────────────────────────────────────────────
-def draw_mario(surf, x, y, facing, frame, dead=False):
+MARIO_H_SMALL = 36
+MARIO_H_BIG   = 64
+
+def draw_mario(surf, x, y, facing, frame, dead=False, big=False):
     bx, by = int(x), int(y)
     if dead:
-        # Spinning dead mario (just red)
-        pygame.draw.ellipse(surf, RED, (bx+2,by+4,28,28))
-        pygame.draw.rect(surf, RED, (bx+4,by,20,6))
+        pygame.draw.ellipse(surf, RED, (bx+2, by+4, 28, 28))
+        pygame.draw.rect(surf, RED, (bx+4, by, 20, 6))
         return
+
+    if big:
+        # ── Big Mario (28×64) ──────────────────────────────────────────────
+        pygame.draw.rect(surf, RED,        (bx+6,  by-8,  16, 12))  # hat crown
+        pygame.draw.rect(surf, RED,        (bx+2,  by+3,  24,  8))  # hat brim
+        pygame.draw.rect(surf, (80,50,20), (bx+2,  by+10,  6,  5))  # hair
+        pygame.draw.rect(surf, SKIN,       (bx+4,  by+10, 20, 14))  # face
+        ex = bx+18 if facing==1 else bx+6
+        pygame.draw.rect(surf, BLACK,      (ex,    by+13,  4,  4))  # eye
+        pygame.draw.rect(surf, SKIN,       (bx+10, by+17,  8,  5))  # nose
+        pygame.draw.rect(surf, (80,50,20), (bx+4,  by+22, 20,  4))  # moustache
+        pygame.draw.rect(surf, BLUE,       (bx+2,  by+26, 24, 18))  # overalls
+        pygame.draw.rect(surf, RED,        (bx+2,  by+26,  8,  6))  # susp L
+        pygame.draw.rect(surf, RED,        (bx+18, by+26,  8,  6))  # susp R
+        arm_x = bx+26 if facing==1 else bx-4
+        pygame.draw.rect(surf, RED,        (arm_x, by+26,  6, 12))  # arm
+        pygame.draw.rect(surf, SKIN,       (arm_x, by+36,  6,  6))  # hand
+        step = frame % 2
+        if step == 0:
+            pygame.draw.rect(surf, BLUE,  (bx+2,  by+44, 12, 15))
+            pygame.draw.rect(surf, BLUE,  (bx+16, by+39, 12, 20))
+            pygame.draw.rect(surf, BROWN, (bx+0,  by+57, 14,  7))
+            pygame.draw.rect(surf, BROWN, (bx+14, by+57, 14,  7))
+        else:
+            pygame.draw.rect(surf, BLUE,  (bx+2,  by+39, 12, 20))
+            pygame.draw.rect(surf, BLUE,  (bx+16, by+44, 12, 15))
+            pygame.draw.rect(surf, BROWN, (bx+0,  by+57, 14,  7))
+            pygame.draw.rect(surf, BROWN, (bx+14, by+57, 14,  7))
+        return
+
+    # ── Small Mario (28×36) ───────────────────────────────────────────────
     # Hat
     pygame.draw.rect(surf, RED, (bx+3,by+2,26,5))
     pygame.draw.rect(surf, RED, (bx+7,by-5,16,8))
@@ -318,8 +431,13 @@ def draw_flagpole(surf, cam_x):
 
 # ── Game ──────────────────────────────────────────────────────────────────────
 class MarioGame:
-    MARIO_W, MARIO_H = 28, 36
+    MARIO_W = 28
+    MARIO_H = 36   # kept for backward compat; use _mario_h for live hitbox
     GOOMBA_W, GOOMBA_H = 30, 32
+
+    @property
+    def _mario_h(self):
+        return MARIO_H_BIG if self.mario_big else MARIO_H_SMALL
 
     def __init__(self):
         self.screen = pygame.display.set_mode((WIN_W, WIN_H))
@@ -328,10 +446,26 @@ class MarioGame:
         _fonts()
         self.world = make_level()
         self.clouds = make_clouds()
+        self.cleared_stages  = [False, False, False]
+        self.worldmap_cursor = 0
+        self.current_stage   = 0
+        self._wm_anim_t      = 0
+        self._wm_anim_frame  = 0
         self.state = 'title'
         self.reset()
 
     def reset(self):
+        """Full reset — new game from scratch."""
+        self.cleared_stages  = [False, False, False]
+        self.worldmap_cursor = 0
+        self.score  = 0
+        self.lives  = 3
+        self.coins  = 0
+        self._start_stage(0)
+
+    def _start_stage(self, idx):
+        """Per-stage reset — keeps score/lives/coins/cleared_stages."""
+        self.current_stage = idx
         self.mx   = float(2 * TILE)
         self.my   = float(10 * TILE)
         self.mvx  = 0.0
@@ -342,16 +476,13 @@ class MarioGame:
         self.anim_frame= 0
         self.dead      = False
         self.dead_t    = 0
-        self.score  = 0
-        self.lives  = 3
-        self.coins  = 0
         self.cam_x  = 0.0
-        # Reset world coin blocks
         self.world = make_level()
-        self.block_bumps = []   # active block bump animations
-        self.items       = []   # spawned coins / mushrooms / flowers
+        self.block_bumps = []
+        self.items       = []
         self.mario_big   = False
         self.mario_fire  = False
+        self.grow_t      = 0    # ms remaining for grow/shrink blink animation
         # Pipes
         _gy = 12 * TILE
         self.pipes = [pygame.Rect(col * TILE, _gy - PIPE_H, PIPE_W, PIPE_H)
@@ -365,7 +496,6 @@ class MarioGame:
         goomba_cols = [14,24,38,53,63,76,92,103,118,133,146,163,177,205,215,226]
         self.goombas = []
         for col in goomba_cols:
-            # find ground row
             for row in range(WORLD_ROWS-1,-1,-1):
                 if is_solid(tile_at(self.world, col, row)):
                     gx = float(col * TILE)
@@ -377,10 +507,35 @@ class MarioGame:
                     })
                     break
 
+        # ── Underground stage init ────────────────────────────────────────────
+        self.current_map = 'surface'
+        self.world_cols  = WORLD_COLS
+        self.ug_world    = make_underground()
+        _ug_gy           = 13 * TILE
+        _ug_pipe_cols    = [5, 30, 55, 82]
+        self.ug_pipes    = [pygame.Rect(c * TILE, _ug_gy - PIPE_H, PIPE_W, PIPE_H)
+                            for c in _ug_pipe_cols]
+        ug_goomba_cols   = [12, 22, 38, 48, 62, 72, 86]
+        self.ug_goombas  = []
+        for col in ug_goomba_cols:
+            for row in range(WORLD_ROWS - 1, -1, -1):
+                if is_solid(tile_at(self.ug_world, col, row)):
+                    self.ug_goombas.append({
+                        'x': float(col * TILE), 'y': float(row * TILE - self.GOOMBA_H),
+                        'vx': -1.5, 'vy': 0.0,
+                        'alive': True, 'stomped': False, 'stomp_t': 0,
+                        'frame': 0, 'frame_t': 0,
+                    })
+                    break
+        # Save surface references for restoration when returning from underground
+        self.surface_world   = self.world
+        self.surface_pipes   = self.pipes
+        self.surface_goombas = self.goombas
+
     # ── Collision ─────────────────────────────────────────────────────────────
     def _get_tile_overlaps(self, rect):
         c1 = max(0, rect.left   // TILE)
-        c2 = min(WORLD_COLS-1, (rect.right-1)  // TILE)
+        c2 = min(self.world_cols-1, (rect.right-1)  // TILE)
         r1 = max(0, rect.top    // TILE)
         r2 = min(WORLD_ROWS,   (rect.bottom-1) // TILE)
         return c1, c2, r1, r2
@@ -430,27 +585,39 @@ class MarioGame:
 
     # ── Update ────────────────────────────────────────────────────────────────
     def update(self, dt, keys):
-        if self.state in ('title', 'gameover', 'win'):
+        if self.state in ('title', 'gameover', 'win', 'worldmap'):
             return
 
-        # ── Pipe enter (마리오가 파이프 속으로 내려감) ──────────────────────────
+        # ── Pipe enter (지상 → 지하: 마리오가 파이프 속으로 내려감) ─────────────
         if self.state == 'pipe_enter':
             self.pipe_enter_t += dt
             self.my += 1.5
             self.fade_alpha = min(255, int(self.pipe_enter_t / 500 * 255))
             if self.pipe_enter_t >= 700:
-                ep = self.pipes[1]
-                self.mx        = float(ep.left + (PIPE_W - self.MARIO_W) // 2)
-                self.my        = float(ep.top + 8)  # 파이프 안에서 시작
-                target_cam     = self.mx - WIN_W // 3
-                self.cam_x     = max(0.0, min(float(target_cam),
-                                              float(WORLD_COLS * TILE - WIN_W)))
-                self.state        = 'pipe_exit'
-                self.pipe_exit_t  = 0
-                self.fade_alpha   = 255
+                # Save current surface state and activate underground
+                self.surface_world   = self.world
+                self.surface_pipes   = self.pipes
+                self.surface_goombas = self.goombas
+                self.surface_cam_x   = self.cam_x
+                self.world      = self.ug_world
+                self.pipes      = self.ug_pipes
+                self.goombas    = self.ug_goombas
+                self.world_cols = UG_COLS
+                self.current_map = 'underground'
+                self.block_bumps = []
+                self.items       = []
+                ep = self.pipes[0]   # underground entry pipe (col 5)
+                self.mx       = float(ep.left + (PIPE_W - self.MARIO_W) // 2)
+                self.my       = float(ep.top + 8)
+                target_cam    = self.mx - WIN_W // 3
+                self.cam_x    = max(0.0, min(float(target_cam),
+                                             float(UG_COLS * TILE - WIN_W)))
+                self.state       = 'pipe_exit'
+                self.pipe_exit_t = 0
+                self.fade_alpha  = 255
             return
 
-        # ── Pipe exit (마리오가 파이프에서 나타남) ──────────────────────────────
+        # ── Pipe exit (파이프에서 나타남) ─────────────────────────────────────
         if self.state == 'pipe_exit':
             self.pipe_exit_t += dt
             self.my -= 1.5
@@ -461,10 +628,38 @@ class MarioGame:
                 self.mvy        = 0
             return
 
+        # ── Underground exit (지하 → 지상: 마리오가 파이프를 타고 올라감) ──────
+        if self.state == 'ug_pipe_enter':
+            self.pipe_enter_t += dt
+            self.my -= 1.5
+            self.fade_alpha = min(255, int(self.pipe_enter_t / 500 * 255))
+            if self.pipe_enter_t >= 700:
+                # Restore surface state
+                self.ug_world   = self.world
+                self.ug_pipes   = self.pipes
+                self.ug_goombas = self.goombas
+                self.world      = self.surface_world
+                self.pipes      = self.surface_pipes
+                self.goombas    = self.surface_goombas
+                self.world_cols = WORLD_COLS
+                self.current_map = 'surface'
+                self.block_bumps = []
+                self.items       = []
+                sp = self.pipes[0]   # surface pipe[0] (col 22)
+                self.mx       = float(sp.left + (PIPE_W - self.MARIO_W) // 2)
+                self.my       = float(sp.top + 8)
+                target_cam    = self.mx - WIN_W // 3
+                self.cam_x    = max(0.0, min(float(target_cam),
+                                             float(WORLD_COLS * TILE - WIN_W)))
+                self.state       = 'pipe_exit'
+                self.pipe_exit_t = 0
+                self.fade_alpha  = 255
+            return
+
         # ── Flagpole slide (폴을 타고 내려감) ───────────────────────────────────
         if self.state == 'flagpole':
             self.flag_t += dt
-            if int(self.my) + self.MARIO_H < FLAG_BOT:
+            if int(self.my) + self._mario_h < FLAG_BOT:
                 self.my    += 2.5
                 self.mx     = float(FLAG_X - self.MARIO_W + 4)
                 self.facing = 1
@@ -481,8 +676,25 @@ class MarioGame:
                 if self.lives <= 0:
                     self.state = 'gameover'
                 else:
-                    self.reset()
+                    self._start_stage(self.current_stage)
+                    self.state = 'playing'
             return
+
+        # ── Grow animation timer ─────────────────────────────────────────────
+        if self.grow_t > 0:
+            self.grow_t = max(0, self.grow_t - dt)
+
+        # ── Underground exit check (↑ key at exit pipe, before jump) ─────────
+        if self.current_map == 'underground' and keys[pygame.K_UP] and self.on_ground:
+            exit_pipe  = self.pipes[3]
+            mario_cx   = int(self.mx) + self.MARIO_W // 2
+            mario_feet = int(self.my) + self._mario_h
+            if exit_pipe.left < mario_cx < exit_pipe.right and abs(mario_feet - exit_pipe.top) <= 6:
+                self.state        = 'ug_pipe_enter'
+                self.pipe_enter_t = 0
+                self.fade_alpha   = 0
+                self.mvx = 0; self.mvy = 0
+                return
 
         # ── Mario movement ────────────────────────────────────────────────────
         self.mvy += GRAVITY
@@ -501,7 +713,7 @@ class MarioGame:
             self.mvy = JUMP_VEL
             self.on_ground = False
 
-        mrect = pygame.Rect(int(self.mx), int(self.my), self.MARIO_W, self.MARIO_H)
+        mrect = pygame.Rect(int(self.mx), int(self.my), self.MARIO_W, self._mario_h)
         nvx, nvy, on_gnd, ceiling_tiles = self._move(mrect, self.mvx, self.mvy)
         self.mvx = nvx; self.mvy = nvy
         self.mx = float(mrect.x); self.my = float(mrect.y)
@@ -547,11 +759,11 @@ class MarioGame:
 
         # Camera
         target_cam = self.mx - WIN_W // 3
-        max_cam = WORLD_COLS * TILE - WIN_W
+        max_cam = self.world_cols * TILE - WIN_W
         self.cam_x = max(0.0, min(float(target_cam), float(max_cam)))
 
         # ── Goombas ──────────────────────────────────────────────────────────
-        mario_rect = pygame.Rect(int(self.mx), int(self.my), self.MARIO_W, self.MARIO_H)
+        mario_rect = pygame.Rect(int(self.mx), int(self.my), self.MARIO_W, self._mario_h)
         for g in self.goombas:
             if not g['alive']: continue
 
@@ -572,7 +784,7 @@ class MarioGame:
                         if g['vx'] > 0: gr.right = col*TILE; g['vx'] *= -1
                         elif g['vx'] < 0: gr.left = (col+1)*TILE; g['vx'] *= -1
             if gr.left <= 0: gr.left = 0; g['vx'] = abs(g['vx'])
-            if gr.right >= WORLD_COLS*TILE: gr.right = WORLD_COLS*TILE; g['vx'] = -abs(g['vx'])
+            if gr.right >= self.world_cols*TILE: gr.right = self.world_cols*TILE; g['vx'] = -abs(g['vx'])
             for pipe in self.pipes:
                 if gr.colliderect(pipe):
                     if g['vx'] > 0: gr.right = pipe.left; g['vx'] = -abs(g['vx'])
@@ -604,12 +816,11 @@ class MarioGame:
 
             # Mario-Goomba collision
             if mario_rect.colliderect(gr):
-                # Stomp: mario falling and above center of goomba
                 if self.mvy > 0 and mario_rect.bottom <= gr.centery + 8:
                     g['stomped'] = True; g['stomp_t'] = 400
                     self.mvy = JUMP_VEL * 0.5
                     self.score += 100
-                else:
+                elif self.grow_t <= 0:   # invincible during grow blink
                     self._die()
                     return
 
@@ -663,8 +874,8 @@ class MarioGame:
                                     ir.right = col * TILE;      item['vx'] = -abs(item['vx'])
                                 elif item['vx'] < 0:
                                     ir.left  = (col+1) * TILE;  item['vx'] =  abs(item['vx'])
-                    if ir.left  <= 0:                ir.left  = 0;                item['vx'] =  abs(item['vx'])
-                    if ir.right >= WORLD_COLS * TILE: ir.right = WORLD_COLS*TILE; item['vx'] = -abs(item['vx'])
+                    if ir.left  <= 0:                    ir.left  = 0;                        item['vx'] =  abs(item['vx'])
+                    if ir.right >= self.world_cols*TILE: ir.right = self.world_cols*TILE; item['vx'] = -abs(item['vx'])
                     for pipe in self.pipes:
                         if ir.colliderect(pipe):
                             if item['vx'] > 0: ir.right = pipe.left; item['vx'] = -abs(item['vx'])
@@ -696,31 +907,39 @@ class MarioGame:
                 if mario_rect.colliderect(ir):
                     item['alive'] = False
                     if item['type'] == 'mushroom':
-                        self.score    += 500
-                        self.mario_big = True
+                        self.score += 500
+                        if not self.mario_big:
+                            # Shift mario up so feet stay on the ground
+                            self.my    -= (MARIO_H_BIG - MARIO_H_SMALL)
+                            self.mario_big = True
+                            self.grow_t    = 500
                     elif item['type'] == 'flower':
-                        self.score      += 200
-                        self.mario_fire  = True
-                        self.mario_big   = True
+                        self.score += 200
+                        if not self.mario_big:
+                            self.my    -= (MARIO_H_BIG - MARIO_H_SMALL)
+                            self.grow_t = 500
+                        self.mario_fire = True
+                        self.mario_big  = True
 
-        # ── Pipe entry check (↓ 키로 첫 번째 파이프 입장) ───────────────────────
-        if keys[pygame.K_DOWN] and self.on_ground:
+        # ── Pipe entry check (↓ 키, 지상에서만 첫 번째 파이프 입장) ────────────
+        if self.current_map == 'surface' and keys[pygame.K_DOWN] and self.on_ground:
             pipe0      = self.pipes[0]
             mario_cx   = int(self.mx) + self.MARIO_W // 2
-            mario_feet = int(self.my) + self.MARIO_H
+            mario_feet = int(self.my) + self._mario_h
             if pipe0.left < mario_cx < pipe0.right and abs(mario_feet - pipe0.top) <= 6:
                 self.state        = 'pipe_enter'
                 self.pipe_enter_t = 0
                 self.fade_alpha   = 0
                 self.mvx = 0; self.mvy = 0
 
-        # ── Flagpole collision ────────────────────────────────────────────────
-        pole_rect = pygame.Rect(FLAG_X, FLAG_TOP, 8, FLAG_BOT - FLAG_TOP)
-        if mario_rect.colliderect(pole_rect):
-            self.state  = 'flagpole'
-            self.flag_t = 0
-            self.score += 500
-            self.mvx = 0; self.mvy = 0
+        # ── Flagpole collision (지상에서만) ───────────────────────────────────
+        if self.current_map == 'surface':
+            pole_rect = pygame.Rect(FLAG_X, FLAG_TOP, 8, FLAG_BOT - FLAG_TOP)
+            if mario_rect.colliderect(pole_rect):
+                self.state  = 'flagpole'
+                self.flag_t = 0
+                self.score += 500
+                self.mvx = 0; self.mvy = 0
 
     def _die(self):
         self.dead      = True
@@ -732,19 +951,26 @@ class MarioGame:
 
     # ── Draw ─────────────────────────────────────────────────────────────────
     def draw(self):
-        self.screen.fill(SKY)
-        draw_clouds(self.screen, self.clouds, self.cam_x)
+        if self.state == 'worldmap':
+            self._draw_worldmap()
+            pygame.display.flip()
+            return
+
+        underground = self.current_map == 'underground'
+        self.screen.fill(BLACK if underground else SKY)
+        if not underground:
+            draw_clouds(self.screen, self.clouds, self.cam_x)
 
         # Tiles (with bump offset)
         c_start = max(0, int(self.cam_x // TILE) - 1)
-        c_end   = min(WORLD_COLS, c_start + (WIN_W // TILE) + 3)
+        c_end   = min(self.world_cols, c_start + (WIN_W // TILE) + 3)
         bump_offsets = {(b['col'], b['row']): int(b['offset']) for b in self.block_bumps}
         for r in range(WORLD_ROWS):
             for c in range(c_start, c_end):
                 t = self.world[r][c]
                 if t != EMPTY:
                     py = r * TILE + bump_offsets.get((c, r), 0)
-                    draw_tile(self.screen, t, c*TILE - int(self.cam_x), py)
+                    draw_tile(self.screen, t, c*TILE - int(self.cam_x), py, underground)
 
         # Pipes
         for pipe in self.pipes:
@@ -752,8 +978,9 @@ class MarioGame:
             if -PIPE_W < px < WIN_W + PIPE_W:
                 draw_pipe(self.screen, px, pipe.y)
 
-        # Flagpole
-        draw_flagpole(self.screen, self.cam_x)
+        # Flagpole (지상에서만)
+        if not underground:
+            draw_flagpole(self.screen, self.cam_x)
 
         # Items (spawned coins / mushrooms / flowers)
         for item in self.items:
@@ -775,9 +1002,14 @@ class MarioGame:
             if -TILE*2 < gx < WIN_W + TILE*2:
                 draw_goomba(self.screen, gx, g['y'], g['frame'], g['stomped'])
 
-        # Mario
+        # Mario — blink between small/big during grow_t window
         mx_screen = self.mx - self.cam_x
-        draw_mario(self.screen, mx_screen, self.my, self.facing, self.anim_frame, self.dead)
+        if self.grow_t > 0:
+            show_big = (self.grow_t // 80) % 2 == 0
+        else:
+            show_big = self.mario_big
+        draw_mario(self.screen, mx_screen, self.my, self.facing, self.anim_frame,
+                   self.dead, big=show_big)
 
         # HUD
         self._draw_hud()
@@ -845,20 +1077,139 @@ class MarioGame:
         self.screen.blit(t,(WIN_W//2-t.get_width()//2, WIN_H//2-90))
         sc = fm.render(f'점수: {self.score}  코인: {self.coins}', True, WHITE)
         self.screen.blit(sc,(WIN_W//2-sc.get_width()//2, WIN_H//2-20))
-        r = fs.render('[ R ] 재시작   [ ESC ] 메인메뉴', True, (180,180,180))
+        r = fs.render('[ R ] 월드맵으로   [ ESC ] 종료', True, (180,180,180))
         self.screen.blit(r,(WIN_W//2-r.get_width()//2, WIN_H//2+30))
+
+    # ── World Map ────────────────────────────────────────────────────────────
+    def _draw_worldmap(self):
+        _fonts()
+        # Checkerboard grass background
+        for row in range(WIN_H // 40 + 1):
+            for col in range(WIN_W // 40 + 1):
+                shade = (38, 155, 38) if (col + row) % 2 == 0 else (50, 170, 50)
+                pygame.draw.rect(self.screen, shade, (col * 40, row * 40, 40, 40))
+        pygame.draw.rect(self.screen, (20, 100, 20), (0, 0, WIN_W, WIN_H), 5)
+
+        # Title
+        fn = pygame.font.SysFont('consolas', 36, bold=True)
+        fm = pygame.font.SysFont('consolas', 16, bold=True)
+        fs = pygame.font.SysFont('consolas', 14)
+
+        shadow = fn.render('WORLD  1', True, (80, 50, 0))
+        title  = fn.render('WORLD  1', True, COIN_C)
+        tx = WIN_W // 2 - title.get_width() // 2
+        self.screen.blit(shadow, (tx + 2, 32))
+        self.screen.blit(title,  (tx,     30))
+
+        # Stage layout
+        stage_names = ['1-1', '1-2', '1-3']
+        stage_x     = [160,   400,   640  ]
+        stage_y     = 260
+        node_r      = 32
+
+        # Connecting dashed paths
+        for i in range(2):
+            x1 = stage_x[i] + node_r
+            x2 = stage_x[i + 1] - node_r
+            path_color = WHITE if self.cleared_stages[i] else (80, 110, 80)
+            dash, gap, x = 12, 7, x1
+            while x < x2:
+                ex = min(x + dash, x2)
+                pygame.draw.line(self.screen, path_color, (x, stage_y), (ex, stage_y), 4)
+                x += dash + gap
+
+        # Stage nodes
+        for i, (name, sx) in enumerate(zip(stage_names, stage_x)):
+            accessible = (i == 0) or self.cleared_stages[i - 1]
+            cleared    = self.cleared_stages[i]
+            selected   = self.worldmap_cursor == i
+
+            # Drop shadow
+            pygame.draw.circle(self.screen, (0, 60, 0), (sx + 3, stage_y + 3), node_r)
+
+            # Selection ring
+            if selected:
+                pygame.draw.circle(self.screen, WHITE, (sx, stage_y), node_r + 7, 3)
+
+            # Fill colour
+            if cleared:
+                fill   = (255, 200, 50)
+                border = (200, 140, 0)
+            elif accessible:
+                fill   = (230, 230, 230)
+                border = (160, 160, 160)
+            else:
+                fill   = (70, 70, 70)
+                border = (50, 50, 50)
+
+            pygame.draw.circle(self.screen, fill,   (sx, stage_y), node_r)
+            pygame.draw.circle(self.screen, border, (sx, stage_y), node_r, 2)
+
+            # Content inside node
+            if not accessible:
+                ql = pygame.font.SysFont('consolas', 24, bold=True)
+                q  = ql.render('?', True, (150, 150, 150))
+                self.screen.blit(q, (sx - q.get_width() // 2, stage_y - q.get_height() // 2))
+            else:
+                nt = fm.render(name, True, BLACK)
+                self.screen.blit(nt, (sx - nt.get_width() // 2, stage_y - nt.get_height() // 2))
+
+            # Star above cleared node
+            if cleared:
+                sf  = pygame.font.SysFont('consolas', 26, bold=True)
+                star = sf.render('★', True, COIN_C)
+                self.screen.blit(star, (sx - star.get_width() // 2, stage_y - node_r - 38))
+
+            # Mario icon above selected node
+            if selected:
+                draw_mario(self.screen,
+                           sx - 14, stage_y - node_r - 56,
+                           1, self._wm_anim_frame)
+
+        # HUD strip
+        hud = fm.render(f'SCORE {self.score:06d}   LIVES x{self.lives}   COINS x{self.coins:02d}',
+                        True, WHITE)
+        pygame.draw.rect(self.screen, (0, 80, 0), (0, WIN_H - 56, WIN_W, 56))
+        pygame.draw.line(self.screen, (0, 120, 0), (0, WIN_H - 56), (WIN_W, WIN_H - 56), 2)
+        self.screen.blit(hud, (WIN_W // 2 - hud.get_width() // 2, WIN_H - 46))
+
+        hint = fs.render('← → 스테이지 선택   Enter 진입   ESC 종료', True, (200, 200, 200))
+        self.screen.blit(hint, (WIN_W // 2 - hint.get_width() // 2, WIN_H - 22))
 
     # ── Event ─────────────────────────────────────────────────────────────────
     def handle_event(self, event):
         if event.type == pygame.QUIT: return False
         if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_ESCAPE: return False
             if self.state == 'title':
-                if event.key == pygame.K_RETURN: self.state = 'playing'
-            elif self.state in ('gameover', 'win'):
+                if event.key == pygame.K_ESCAPE: return False
+                if event.key == pygame.K_RETURN:
+                    self.reset()
+                    self.state = 'worldmap'
+            elif self.state == 'worldmap':
+                if event.key == pygame.K_ESCAPE: return False
+                elif event.key == pygame.K_LEFT:
+                    self.worldmap_cursor = max(0, self.worldmap_cursor - 1)
+                elif event.key == pygame.K_RIGHT:
+                    self.worldmap_cursor = min(2, self.worldmap_cursor + 1)
+                elif event.key == pygame.K_RETURN:
+                    i = self.worldmap_cursor
+                    accessible = (i == 0) or self.cleared_stages[i - 1]
+                    if accessible:
+                        self._start_stage(i)
+                        self.state = 'playing'
+            elif self.state == 'win':
+                if event.key == pygame.K_ESCAPE: return False
                 if event.key == pygame.K_r:
-                    self.reset(); self.state = 'playing'
-                elif event.key == pygame.K_ESCAPE: return False
+                    self.cleared_stages[self.current_stage] = True
+                    self.worldmap_cursor = min(self.current_stage + 1, 2)
+                    self.state = 'worldmap'
+            elif self.state == 'gameover':
+                if event.key == pygame.K_ESCAPE: return False
+                if event.key == pygame.K_r:
+                    self.reset()
+                    self.state = 'worldmap'
+            else:
+                if event.key == pygame.K_ESCAPE: return False
         return True
 
     def run(self):
@@ -868,7 +1219,12 @@ class MarioGame:
             for event in pygame.event.get():
                 if not self.handle_event(event):
                     running = False
-            if self.state in ('playing', 'pipe_enter', 'pipe_exit', 'flagpole'):
+            if self.state == 'worldmap':
+                self._wm_anim_t += dt
+                if self._wm_anim_t > 300:
+                    self._wm_anim_t = 0
+                    self._wm_anim_frame = (self._wm_anim_frame + 1) % 2
+            if self.state in ('playing', 'pipe_enter', 'pipe_exit', 'flagpole', 'ug_pipe_enter'):
                 keys = pygame.key.get_pressed()
                 self.update(dt, keys)
             self.draw()
